@@ -8,20 +8,38 @@
 #include <ir_math/ir_fft.h>
 #include <ir_md5.h>
 
-ir::Ring<Uint8> transmitted_stream(1024 * 1024);
-
-void play_callback(void* userdata, Uint8* stream, signed int len)
+class Transmitter
 {
-	if (transmitted_stream.count() < (unsigned int)len)
-	{
-		unsigned int count = transmitted_stream.count();
-		transmitted_stream.read(stream, count);
-		memset(stream + count, 0, len - count);
-	}
-	else transmitted_stream.read(stream, len);
+private:
+	ir::Ring<Uint8> _stream;
+	bool _sdl_inited = false;
+	int _device = 0;
+
+	static void _callback(void* userdata, Uint8* stream, signed int len);
+	void _transmit_multibit(const bool multibit[nfrequencies]);
+	void _transmit_multibyte(const unsigned char multibyte[nfrequencies]);
+	void _transmit_silence();
+
+public:
+	Transmitter();
+	bool ok();
+	void transmit(const void *data, unsigned char size);
+	~Transmitter();
 };
 
-void transmit_multibit(const bool multibit[nfrequencies])
+void Transmitter::_callback(void* userdata, Uint8* stream, signed int len)
+{
+	ir::Ring<Uint8> *transstream = &((Transmitter*)userdata)->_stream;
+	if (transstream->count() < (unsigned int)len)
+	{
+		unsigned int count = transstream->count();
+		transstream->read(stream, count);
+		memset(stream + count, 0, len - count);
+	}
+	else transstream->read(stream, len);
+};
+
+void Transmitter::_transmit_multibit(const bool multibit[nfrequencies])
 {
 	std::complex<float> cbuffer[nsamples];
 	for (unsigned int i = 0; i < nsamples; i++)
@@ -44,30 +62,30 @@ void transmit_multibit(const bool multibit[nfrequencies])
 	{
 		ibuffer[i] = (int)(0x7FFFFF00 * 0.5f * cbuffer[i].real());
 	}
-	transmitted_stream.write((Uint8*)ibuffer, nsamples * sizeof(int));
+	_stream.write((Uint8*)ibuffer, nsamples * sizeof(int));
 };
 
-void transmit_multibyte(const unsigned char multibyte[nfrequencies])
+void Transmitter::_transmit_multibyte(const unsigned char multibyte[nfrequencies])
 {
-	bool multibit[nfrequencies];
 	for (unsigned int i = 0; i < 8; i++)
 	{
+		bool multibit[nfrequencies];
 		for (unsigned int j = 0; j < nfrequencies; j++)
 		{
 			multibit[j] = multibyte[j] & (1 << i);
 		}
-		transmit_multibit(multibit);
+		_transmit_multibit(multibit);
 	}
 };
 
-void transmit_silence()
+void Transmitter::_transmit_silence()
 {
 	int ibuffer[nsamples];
 	for (unsigned int i = 0; i < nsamples; i++) ibuffer[i] = 0;
-	transmitted_stream.write((Uint8*)ibuffer, nsamples * sizeof(int));
+	_stream.write((Uint8*)ibuffer, nsamples * sizeof(int));
 };
 
-void transmit(const void *data, unsigned char size)
+void Transmitter::transmit(const void *data, unsigned char size)
 {
 	//Filling buffer with header
 	unsigned char buffer[(255 + sizeof(Header) + nfrequencies - 1) / nfrequencies * nfrequencies];
@@ -90,18 +108,24 @@ void transmit(const void *data, unsigned char size)
 	//Transmitting
 	for (unsigned int i = 0; i < nmultibytes; i++)
 	{
-		transmit_multibyte(buffer + i * nfrequencies);
+		_transmit_multibyte(buffer + i * nfrequencies);
 	}
 
 	//Silence
-	transmit_silence();
+	_transmit_silence();
 };
 
-int main(int argc, char **argv)
+bool Transmitter::ok()
+{
+	return _sdl_inited && _device != 0;
+};
+
+Transmitter::Transmitter() : _stream(1024 * 1024)
 {
 	//Initing SDL
-	if (SDL_Init(SDL_INIT_AUDIO) != 0) return 1;
-	
+	if (SDL_Init(SDL_INIT_AUDIO) != 0) return;
+	_sdl_inited = true;
+
 	//Opening audio device
 	SDL_AudioSpec desired, obtained;
 	SDL_zero(desired);
@@ -109,22 +133,30 @@ int main(int argc, char **argv)
 	desired.format = AUDIO_S32SYS;
 	desired.channels = 1;
 	desired.samples = 4096;
-	desired.callback = play_callback;
-	SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, SDL_FALSE, &desired, &obtained, 0);
-	if (device == 0) { SDL_Quit(); return 2; }
-	SDL_PauseAudioDevice(device, SDL_FALSE);
+	desired.callback = _callback;
+	desired.userdata = this;
+	_device = SDL_OpenAudioDevice(nullptr, SDL_FALSE, &desired, &obtained, 0);
+	if (_device == 0) return;
+	SDL_PauseAudioDevice(_device, SDL_FALSE);
+};
 
-	//Transmitting
+Transmitter::~Transmitter()
+{
+	if (_device != 0) SDL_CloseAudioDevice(_device);
+	if (_sdl_inited) SDL_Quit();
+};
+
+int main(int argc, char **argv)
+{
+	Transmitter t;
+	if (!t.ok()) return 1;
+
 	while (true)
 	{
 		char s[16];
 		scanf_s("%15s", s, _countof(s));
-		if (strlen(s) == 0) break;
-		else transmit(s, (unsigned char)strlen(s));
+		t.transmit(s, (unsigned char)strlen(s));
 	}
 
-	//Exiting
-	SDL_CloseAudioDevice(device);
-	SDL_Quit();
 	return 0;
 };
