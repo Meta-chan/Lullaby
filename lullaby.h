@@ -1,12 +1,12 @@
 #ifndef LULLABY
 #define LULLABY
 
-static const unsigned int frequency = 44100;
-static const unsigned int nsamples = 128;
+static const unsigned int frequency = 48000;
+static const unsigned int nsamples = 4096;
 static const unsigned int nfrequencies = 1;
 static const unsigned int frequencies[] =
 {
-	2
+	500
 };
 
 struct Header

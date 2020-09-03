@@ -7,6 +7,7 @@
 #include <ir_container/ir_ring.h>
 #include <ir_math/ir_fft.h>
 #include <ir_md5.h>
+#include <ir_plot.h>
 
 class Receiver
 {
@@ -34,9 +35,9 @@ public:
 void Receiver::_callback(void* userdata, Uint8* stream, int len)
 {
 	ir::Ring<Uint8> *recstream = &((Receiver*)userdata)->_stream;
-	if (recstream->size() - recstream->count() < (unsigned int)len)
+	if ((recstream->size() - recstream->count()) < (unsigned int)len)
 	{
-		recstream->read_direct((len + sizeof(int) - 1) & (sizeof(int) - 1));
+		recstream->read_direct((len + sizeof(int) - 1) & ~(sizeof(int) - 1));
 	}
 	recstream->write(stream, len);
 };
@@ -55,11 +56,17 @@ bool Receiver::_receive_signature_multibit()
 	std::complex<float> cbuffer[nsamples];
 	for (unsigned int i = 0; i < nsamples; i++)
 	{
-		cbuffer[i] = (float)ibuffer[i];
+		cbuffer[i] = (0.53836f - 0.46164f * cosf(2 * M_PI * i / (nsamples - 1))) * ibuffer[i];
 	}
 
 	//Conducting FFT
 	ir::fft(cbuffer, nsamples);
+	ir::Plot plot;
+	plot.n = nsamples;
+	plot.xfunc = [](void *user, unsigned int i) ->double { return i; };
+	plot.yfunc = [](void *user, unsigned int i) ->double { return abs(((std::complex<float>*)user)[i]); };
+	plot.yuser = cbuffer;
+	//ir::plot(1, plot);
 
 	//Conditions for signature multibit to be accepted:
 	//1) Maximum is on some carrying frequency
@@ -74,17 +81,25 @@ bool Receiver::_receive_signature_multibit()
 	//1 and 2
 	for (unsigned int i = 0; i < nfrequencies; i++)
 	{
-		if (abs(cbuffer[frequencies[i] + 1]) < 0.5f * _max_calibration) return false;
+		if (abs(cbuffer[frequencies[i] + 1]) <= 0.7f * _max_calibration)
+		{
+			printf("Maximum check failed frequency %u\n", frequencies[i]);
+			return false;
+		}
 		_calibration[i] = abs(cbuffer[frequencies[i] + 1]);
 	}
 	//3
 	for (unsigned int i = 0; i < nfrequencies + 1; i++)
 	{
-		for (unsigned int j = ((i == 0) ? 1  : (frequencies[i-1] + 2));
+		for (unsigned int j = ((i == 0) ? 1 : (frequencies[i - 1] + 2));
 			j < ((i == nfrequencies) ? (nsamples / 2 + 1) : (frequencies[i] + 1));
 			j++)
 		{
-			if (abs(cbuffer[j]) > 0.1f * _max_calibration) return false;
+			if (abs(cbuffer[j]) > 0.7f * _max_calibration)
+			{
+				//printf("Noise check failed frequency %u\n", j - 1);
+				//return false;
+			}
 		}
 	}
 	return true;
@@ -96,6 +111,7 @@ bool Receiver::_receive_signature_multibyte()
 	{
 		if (!_receive_signature_multibit()) return false;
 	}
+	return true;
 };
 
 bool Receiver::_receive_multibit(bool multibit[nfrequencies])
@@ -112,7 +128,7 @@ bool Receiver::_receive_multibit(bool multibit[nfrequencies])
 	std::complex<float> cbuffer[nsamples];
 	for (unsigned int i = 0; i < nsamples; i++)
 	{
-		cbuffer[i] = (float)ibuffer[i];
+		cbuffer[i] = (0.53836f - 0.46164f * cosf(2 * M_PI * i / (nsamples - 1))) * ibuffer[i];
 	}
 
 	//Conducting FFT
@@ -125,14 +141,18 @@ bool Receiver::_receive_multibit(bool multibit[nfrequencies])
 			j < ((i == nfrequencies) ? (nsamples / 2 + 1) : (frequencies[i] + 1));
 			j++)
 		{
-			if (abs(cbuffer[j]) > 0.1f * _max_calibration) return false;
+			if (abs(cbuffer[j]) > 0.7f * _max_calibration)
+			{
+				//printf("Noise check failed frequency %u\n", j - 1);
+				//return false;
+			}
 		}
 	}
 
 	//Finding data
 	for (unsigned int i = 0; i < nfrequencies; i++)
 	{
-		multibit[i] = abs(cbuffer[1 + frequencies[i]]) > _calibration[i];
+		multibit[i] = abs(cbuffer[1 + frequencies[i]]) > 0.3f * _calibration[i];
 	}
 
 	return true;
@@ -150,6 +170,7 @@ bool Receiver::_receive_multibyte(unsigned char multibyte[nfrequencies])
 			else multibyte[j] &= ~(1 << i);
 		}
 	}
+	return true;
 };
 
 bool Receiver::ok()
@@ -161,26 +182,32 @@ int Receiver::receive(void *data, unsigned char *size)
 {
 	while (true)
 	{
-		if (_stream.count() < sizeof(int)) return 1;
+		if (_stream.count() < sizeof(int))
+		{
+			SDL_Delay(5);
+			return 1;
+		};
 		
 		int value;
 		_stream.read((Uint8*)&value, sizeof(int));
-		if (abs(value) >= _treshold)
+		if (abs(value) > 200000000)
 		{
 			if (_receive_signature_multibyte()) break;
-			else _treshold = 2 * abs(value);
+			//else _treshold = 1.05 * abs(value);
 		}
 	}
 
 	unsigned int received = nfrequencies;	//received by _receive_signature_multibyte
 	unsigned char buffer[(255 + sizeof(Header) + nfrequencies - 1) / nfrequencies * nfrequencies];
+	for (unsigned int i = 0; i < nfrequencies; i++) buffer[i] = 0xFF;
 
 	//Reading size
 	if (!_receive_multibyte(buffer + received)) return false;
 	received += nfrequencies;
+	printf("Receiving size %u\n", ((Header*)buffer)->size);
 
 	//Reading data and hash
-	while (received < ((Header*)buffer)->size)
+	while (received < ((Header*)buffer)->size + sizeof(Header))
 	{
 		if (!_receive_multibyte(buffer + received)) return false;
 		received += nfrequencies;
@@ -196,7 +223,7 @@ int Receiver::receive(void *data, unsigned char *size)
 	return 0;
 };
 
-Receiver::Receiver() : _stream(1024 * 1024)
+Receiver::Receiver() : _stream(nsamples * 256 * sizeof(int) * 5)
 {
 	//Initing SDL
 	if (SDL_Init(SDL_INIT_AUDIO) != 0) return;
@@ -211,9 +238,9 @@ Receiver::Receiver() : _stream(1024 * 1024)
 	desired.samples = 4096;
 	desired.callback = _callback;
 	desired.userdata = this;
-	SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, SDL_TRUE, &desired, &obtained, 0);
-	if (device == 0) return;
-	SDL_PauseAudioDevice(device, SDL_FALSE);
+	_device = SDL_OpenAudioDevice(nullptr, SDL_TRUE, &desired, &obtained, 0);
+	if (_device == 0) return;
+	SDL_PauseAudioDevice(_device, SDL_FALSE);
 };
 
 Receiver::~Receiver()

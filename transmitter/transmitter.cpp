@@ -52,7 +52,7 @@ void Transmitter::_transmit_multibit(const bool multibit[nfrequencies])
 		if (multibit[i])
 		{
 			cbuffer[1 + frequencies[i]] = 1.0f;
-			cbuffer[nsamples - frequencies[i]] = 1.0f;
+			cbuffer[nsamples - frequencies[i] - 1] = 1.0f;
 		}
 	}
 
@@ -60,7 +60,7 @@ void Transmitter::_transmit_multibit(const bool multibit[nfrequencies])
 	int ibuffer[nsamples];
 	for (unsigned int i = 0; i < nsamples; i++)
 	{
-		ibuffer[i] = (int)(0x7FFFFF00 * 0.5f * cbuffer[i].real());
+		ibuffer[i] = (int)(0x7FFFFF00 * 0.05f * cbuffer[i].real());
 	}
 	_stream.write((Uint8*)ibuffer, nsamples * sizeof(int));
 };
@@ -120,7 +120,7 @@ bool Transmitter::ok()
 	return _sdl_inited && _device != 0;
 };
 
-Transmitter::Transmitter() : _stream(1024 * 1024)
+Transmitter::Transmitter() : _stream(nsamples * 1024)
 {
 	//Initing SDL
 	if (SDL_Init(SDL_INIT_AUDIO) != 0) return;
